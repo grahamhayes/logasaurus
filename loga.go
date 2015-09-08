@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"crypto/tls"
 )
 
 // Config struct
@@ -28,6 +29,7 @@ type Config struct {
 	Highlight           bool
 	StartTime           time.Time
 	Count               int
+	InsecureSkipVerify	bool 			  `yaml:"insecure_skip_verify"`
 }
 
 type Es_resp struct {
@@ -59,6 +61,7 @@ var srch_host = flag.Bool("h", false, "Specific hostname to search.")
 var highlight = flag.Bool("hl", false, "Highlight the string with the query.")
 var startTime = flag.Int("st", 0, "Start time for query in minutes. Ex: -st 20 starts query 20 minutes ago.")
 var count = flag.Int("co", 500, "The number of results to return.")
+var InsecureSkipVerify = flag.Bool("k", false, "Use Insecure HTTPS connections")
 
 func options(config_path string) (o Config, err error) {
 	config_file, err := ioutil.ReadFile(config_path)
@@ -110,6 +113,10 @@ func options(config_path string) (o Config, err error) {
 		log.Warn("Returning ", o.Count, " queries.")
 	}
 	return o, nil
+	// Use insecure HTTPS
+	if *InsecureSkipVerify {
+		o.InsecureSkipVerify = *InsecureSkipVerify
+	}
 }
 
 func highlightQuery(line string, query string) {
@@ -160,7 +167,6 @@ func query(service string, c Config) {
 		sort := map[string]map[string]string{
 			"@timestamp": map[string]string{
 				"order":         "asc",
-				"unmapped_type": "long",
 			},
 		}
 		query := map[string]interface{}{
@@ -204,7 +210,7 @@ func query(service string, c Config) {
 		log.Debug("ES JSON Post: ", string(jsonpost))
 
 		// Craft the request URI
-		uri_ary := []string{"http://", c.Elasticsearch_url, ":", c.Elasticsearch_port, "/_search?pretty"} //c.Elasticsearch_index, "/_search?pretty"}
+		uri_ary := []string{c.Elasticsearch_url, ":", c.Elasticsearch_port, "/_search?pretty"} //c.Elasticsearch_index, "/_search?pretty"}
 		query_uri := strings.Join(uri_ary, "")
 		log.Debug("Query URI: ", query_uri)
 		// Make request
@@ -213,7 +219,10 @@ func query(service string, c Config) {
 			log.Error(err)
 			panic(err)
 		}
-		client := &http.Client{}
+		tr := &http.Transport{
+	        TLSClientConfig: &tls.Config{InsecureSkipVerify: c.InsecureSkipVerify},
+	    }
+		client := &http.Client{Transport: tr}
 		resp, err := client.Do(req)
 		if err != nil {
 			panic(err)
@@ -235,8 +244,8 @@ func query(service string, c Config) {
 					for k2, v2 := range v1.(map[string]interface{}) {
 						if k2 == "_source" {
 							if c.Host {
-								message := v2.(map[string]interface{})["message"].(string)
-								host := ansi.Color(v2.(map[string]interface{})["host"].(string), "cyan:black")
+								message := v2.(map[string]interface{})["@message"].(string)
+								host := ansi.Color(v2.(map[string]interface{})["@source_host"].(string), "cyan:black")
 								withHost := strings.Join([]string{host, " ", message}, "")
 								if c.Highlight {
 									highlightQuery(withHost, service)
@@ -245,7 +254,7 @@ func query(service string, c Config) {
 									fmt.Println(withHost)
 								}
 							} else {
-								message := v2.(map[string]interface{})["message"].(string)
+								message := v2.(map[string]interface{})["@message"].(string)
 								if c.Highlight {
 									highlightQuery(message, service)
 								} else {
